@@ -31,7 +31,7 @@ export async function inputs(route, refresh) {
     const data = new FormData(event.target);
     const file = data.get('source');
     if (!file?.size) throw new Error('请选择一个 CSV 文件');
-    if (file.size > 2_000_000) throw new Error('CSV 最多 2 MB');
+    if (file.size > 10_000_000) throw new Error('CSV 最多 10 MB');
     const item = await workspace.upload({name:data.get('batch_name'),filename:file.name,csv_text:await file.text()});
     const target = `#inputs/${item.id}`;
     if (location.hash === target) await refresh();

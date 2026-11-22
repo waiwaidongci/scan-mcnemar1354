@@ -12,7 +12,7 @@ class Credentials(Request):
 class Upload(Request):
     name: str = Field(min_length=1, max_length=120)
     filename: str = Field(min_length=1, max_length=160)
-    csv_text: str = Field(min_length=1, max_length=2_000_000)
+    csv_text: str = Field(min_length=1, max_length=10_000_000)
 
 class RunRequest(Request):
     dataset_id: int = Field(gt=0)

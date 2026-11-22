@@ -8,10 +8,15 @@ from src.domain.spec import SPEC
 from src.models.jobs import Delivery, Run, Schedule
 from src.models.source import Dataset
 from src.services.audit import record
+from src.services.cache import CacheStore
 from src.utils.exports import write_report
 from src.utils.time import now
 
 log = logging.getLogger(__name__)
+
+
+class Superseded(Exception):
+    """租约已被后续尝试接管，本次计算立即中止且结果不得落库。"""
 
 
 def materialize_due():
@@ -57,16 +62,31 @@ def claim():
         job.status = Status.RUNNING
         job.attempt += 1
         job.lease_until = stamp + timedelta(minutes=3)
-        records = db.get(Dataset, job.dataset_id).rows
-        return job.id, job.attempt, records, job.params
+        dataset = db.get(Dataset, job.dataset_id)
+        if job.dataset_checksum is None:
+            job.dataset_checksum = dataset.checksum
+        return job.id, job.attempt, dataset.rows, job.params, job.progress, dataset.checksum, dataset.id
 
 
 def execute(lease):
-    job_id, attempt, rows, params = lease
+    job_id, attempt, rows, params, progress, checksum, dataset_id = lease
+    store = CacheStore(dataset_id=dataset_id, dataset_checksum=checksum)
+
+    def checkpoint(state):
+        # 分块落盘断点并续租约；租约易主则中止本次计算，避免重复写入。
+        with Session.begin() as db:
+            job = db.get(Run, job_id, with_for_update=True)
+            if job is None or job.attempt != attempt or job.status != Status.RUNNING:
+                raise Superseded()
+            job.progress = state
+            job.lease_until = now() + timedelta(minutes=3)
+
     result = export = failure = None
     try:
-        result = analyze(rows, params)
+        result = analyze(rows, params, resume=progress, checkpoint=checkpoint, store=store)
         export = write_report(job_id, attempt, result)
+    except Superseded:
+        return
     except ValueError as error:
         failure = str(error)[:500]
     except Exception:
@@ -76,13 +96,20 @@ def execute(lease):
         job = db.get(Run, job_id, with_for_update=True)
         if job.attempt != attempt or job.status != Status.RUNNING:
             return
+        dataset = db.get(Dataset, job.dataset_id)
+        if not failure and (dataset is None or dataset.checksum != checksum):
+            # 源数据在计算期间更新：旧计算即使晚到也不带入新报告。
+            failure = '源数据在计算期间已更新，请基于最新数据重新运行'
+            record(db, 'worker', 'analysis.stale', job.id, attempt=attempt, checksum=checksum)
         job.lease_until = None
         job.finished_at = now()
+        job.progress = None
         job.status = Status.FAILED if failure else Status.COMPLETE
         job.result = None if failure else result
         job.export_file = export
         job.error = failure
-        record(db, 'worker', f'analysis.{job.status}', job.id, attempt=attempt, reason=failure)
+        cache = (result or {}).get('cache', {})
+        record(db, 'worker', f'analysis.{job.status}', job.id, attempt=attempt, reason=failure, **cache)
         if job.schedule_id:
             plan = db.get(Schedule, job.schedule_id)
             ready = not failure and result.get('ready', True)

@@ -55,8 +55,8 @@ def parse_rows(text):
         if not required <= set(headers) or not set(headers) <= keys or len(headers) != len(set(headers)):
             raise ValueError('CSV 表头与字段说明不符，请下载模板检查列名')
         for raw in reader:
-            if len(rows) >= 5000:
-                raise ValueError('一个数据批次最多导入 5000 行')
+            if len(rows) >= 50000:
+                raise ValueError('一个数据批次最多导入 50000 行')
             try:
                 if None in raw or any(value is None for value in raw.values()):
                     raise ValueError('工作表的列数与表头不一致')

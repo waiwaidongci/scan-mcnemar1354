@@ -12,10 +12,19 @@ from src.utils.wakeup import broker
 
 log = logging.getLogger(__name__)
 
+# create_all 只补缺失的表，既有表的新增列在这里显式补齐。
+MIGRATIONS = [
+    'ALTER TABLE runs ADD COLUMN IF NOT EXISTS progress JSON',
+    'ALTER TABLE runs ADD COLUMN IF NOT EXISTS dataset_checksum VARCHAR(64)',
+]
+
 
 @asynccontextmanager
 async def lifespan(_app):
     Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        for statement in MIGRATIONS:
+            connection.execute(text(statement))
     if SEED_DEMO:
         try:
             log.info('Seeded %s', seed())
